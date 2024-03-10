@@ -1,3 +1,4 @@
+#[macro_use]
 extern crate cocoa;
 #[macro_use]
 extern crate objc;
@@ -11,27 +12,39 @@ use cocoa::base::{id, nil, NO};
 use cocoa::foundation::{NSAutoreleasePool, NSData, NSPoint, NSRect, NSSize, NSString};
 
 use cocoa::appkit::{NSSquareStatusItemLength, NSStatusBar, NSStatusItem};
-use objc::declare::ClassDecl;
 use objc::runtime::{Object, Sel};
 use std::os::raw::c_void;
 
-extern "C" fn close(_: &Object, _: Sel, _: id) {
-    // Having this prevents the app from crashing even though it doesn't seem to be called
+struct State {
+    window_open: bool,
 }
 
-extern "C" fn open(_: &Object, _: Sel, _: id) {
-    open_window();
+extern "C" fn should_close(_: &Object, _: Sel, _: id) -> bool {
+    return false;
 }
 
-fn create_delegate() -> id {
+extern "C" fn close(this: &Object, _: Sel, _: id) {
     unsafe {
-        let mut delegate_decl = ClassDecl::new("AppDelegate", class!(NSObject)).unwrap();
-        // Required to prevent the app from crashing when the close button is pressed
-        delegate_decl.add_method(sel!(windowWillClose:), close as extern "C" fn(&Object, Sel, id));
-        delegate_decl.add_method(sel!(open:), open as extern "C" fn(&Object, Sel, id));
-        let delegate_class = delegate_decl.register();
-        return msg_send![delegate_class, new];
+        let state_ptr: *mut c_void = *this.get_ivar("state");
+        let state = &mut *(state_ptr as *mut State);
+        state.window_open = false;
     }
+}
+
+extern "C" fn open(this: &Object, _: Sel, _: id) {
+    unsafe {
+        let state_ptr: *mut c_void = *this.get_ivar("state");
+        let state = &mut *(state_ptr as *mut State);
+        let window_delegate: id = *this.get_ivar("window_delegate");
+        if !state.window_open {
+            state.window_open = true;
+            open_window(window_delegate);
+        }
+    }
+}
+
+extern "C" fn will_terminate(_: &Object, _: Sel, _: id) {
+    // Required? Idk
 }
 
 fn add_to_status_bar() {
@@ -56,9 +69,8 @@ fn add_to_status_bar() {
 
         let icon = include_bytes!("icon.svg");
         let icon_data =
-            NSData::dataWithBytes_length_(nil, icon.as_ptr() as *mut c_void, icon.len() as u64)
-                .autorelease();
-        let icon_image = NSImage::initWithData_(NSImage::alloc(nil), icon_data).autorelease();
+            NSData::dataWithBytes_length_(nil, icon.as_ptr() as *mut c_void, icon.len() as u64);
+        let icon_image = NSImage::initWithData_(NSImage::alloc(nil), icon_data);
         let _r: bool = msg_send![icon_image, setTemplate: true];
         let status_bar = NSStatusBar::systemStatusBar(nil);
         let status_item = status_bar.statusItemWithLength_(NSSquareStatusItemLength);
@@ -68,7 +80,7 @@ fn add_to_status_bar() {
     }
 }
 
-fn open_window() {
+fn open_window(window_delegate: id) {
     unsafe {
         let window = NSWindow::alloc(nil)
             .initWithContentRect_styleMask_backing_defer_(
@@ -78,12 +90,13 @@ fn open_window() {
                     | NSWindowStyleMask::NSMiniaturizableWindowMask,
                 NSBackingStoreBuffered,
                 NO,
-            )
-            .autorelease();
+            );
         window.cascadeTopLeftFromPoint_(NSPoint::new(20., 20.));
         window.center();
         let title = NSString::alloc(nil).init_str("Hello World!").autorelease();
         window.setTitle_(title);
+        window.setDelegate_(window_delegate);
+
         window.makeKeyAndOrderFront_(nil);
 
         let current_app = NSRunningApplication::currentApplication(nil);
@@ -93,12 +106,28 @@ fn open_window() {
 
 fn main() {
     unsafe {
-        NSAutoreleasePool::new(nil);
+        let pool = NSAutoreleasePool::new(nil);
+
+        let mut state = State {
+            window_open: false,
+        };
+
+        let window_delegate = delegate!("WindowDelegate", {
+            state: *mut c_void = &mut state as *mut State as *mut c_void,
+            (windowWillClose:) => close as extern "C" fn(&Object, Sel, id)
+        });
 
         let app = NSApp();
         app.setActivationPolicy_(NSApplicationActivationPolicyAccessory);
-        app.setDelegate_(create_delegate());
+        app.setDelegate_(delegate!("AppDelegate", {
+            state: *mut c_void = &mut state as *mut State as *mut c_void,
+            window_delegate: id = window_delegate,
+            (open:) => open as extern "C" fn(&Object, Sel, id),
+            (applicationShouldTerminateAfterLastWindowClosed:) => should_close as extern "C" fn(&Object, Sel, id) -> bool,
+            (applicationWillTerminate:) => will_terminate as extern "C" fn(&Object, Sel, id)
+        }));
         add_to_status_bar();
         app.run();
+        pool.drain();
     }
 }
