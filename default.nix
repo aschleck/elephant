@@ -3,7 +3,6 @@
 pkgs.mkShell {
   buildInputs = with pkgs; [
     cargo
-    lldb
     libiconv
     rustc
     rustfmt
