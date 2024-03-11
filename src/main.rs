@@ -23,7 +23,7 @@ mod worker;
 
 use crate::objc_ffi::NSTextView;
 use crate::types::State;
-use crate::worker::record_state;
+use crate::worker::record_state_loop;
 
 extern "C" fn should_close(_: &Object, _: Sel, _: id) -> bool {
     return false;
@@ -132,7 +132,7 @@ fn main() {
         }));
         let cloned = Arc::clone(&state);
         thread::spawn(|| {
-            record_state(cloned).unwrap();
+            record_state_loop(cloned).unwrap();
         });
 
         let window_delegate = delegate!("WindowDelegate", {

@@ -2,10 +2,11 @@ use anyhow::{anyhow, Result};
 use cocoa::base::nil;
 use cocoa::foundation::{NSAutoreleasePool, NSData};
 use core_foundation::array::{CFArrayGetCount, CFArrayGetValueAtIndex};
-use core_foundation::base::{CFRelease, ToVoid};
+use core_foundation::base::{CFRelease, FromVoid, ToVoid};
 use core_foundation::boolean::CFBooleanRef;
 use core_foundation::dictionary::{CFDictionaryGetValue, CFDictionaryRef};
 use core_foundation::number::{kCFNumberIntType, CFBooleanGetValue, CFNumberGetValue, CFNumberRef};
+use core_foundation::string::CFString;
 use core_graphics::image::CGImage;
 use foreign_types_shared::ForeignType;
 use image::RgbaImage;
@@ -16,24 +17,33 @@ use core_graphics::display::{
     kCGWindowListOptionIncludingWindow, kCGWindowListOptionOnScreenOnly, CGRectNull,
 };
 use core_graphics::window::{
-    create_image, kCGWindowIsOnscreen, kCGWindowNumber, kCGWindowSharingNone,
+    create_image, kCGWindowIsOnscreen, kCGWindowName, kCGWindowNumber, kCGWindowSharingNone,
     kCGWindowSharingState, CGWindowListCopyWindowInfo,
 };
 
 use crate::objc_ffi::{NSBitmapImageRep, NSBitmapImageFileType};
 
 pub struct Screenshot {
+    pub id: u32,
+    pub title: String,
     pub image: RgbaImage,
     pub jpeg: Vec<u8>,
 }
 
+struct WindowHandle {
+    id: u32,
+    title: String,
+}
+
 pub fn take_screenshots() -> Result<Vec<Screenshot>> {
-    let windows = unsafe {
+    unsafe {
+        let pool = NSAutoreleasePool::new(nil);
+
         let window_infos = CGWindowListCopyWindowInfo(
             kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
             kCGNullWindowID,
         );
-        let mut windows: Vec<u32> = Vec::new();
+        let mut windows: Vec<WindowHandle> = Vec::new();
         for i in 0..CFArrayGetCount(window_infos) {
             let info = CFArrayGetValueAtIndex(window_infos, i) as CFDictionaryRef;
             if info.is_null() {
@@ -63,29 +73,35 @@ pub fn take_screenshots() -> Result<Vec<Screenshot>> {
                 kCFNumberIntType,
                 &mut id as *mut _ as *mut c_void,
             );
-            windows.push(id);
+
+            let raw_title = CFDictionaryGetValue(info, kCGWindowName.to_void());
+            let title = CFString::from_void(raw_title).to_string();
+            windows.push(WindowHandle {
+                id: id,
+                title: title,
+            });
         }
         CFRelease(window_infos as *const c_void);
-        windows
-    };
 
-    let mut screenshots = Vec::new();
-    for window in windows {
-        unsafe {
+        let mut screenshots = Vec::new();
+        for window in windows {
             let image = create_image(
                 CGRectNull,
                 kCGWindowListOptionIncludingWindow,
-                window,
+                window.id,
                 kCGWindowImageDefault,
-            ).ok_or_else(|| anyhow!("Null image"))?;
+            ).ok_or_else(|| anyhow!("Unable to take screenshot"))?;
             screenshots.push(Screenshot {
+                id: window.id,
+                title: window.title,
                 image: cgimage_to_image(image.clone())?,
                 jpeg: cgimage_to_jpeg(image.clone())?,
             });
         };
-    }
 
-    Ok(screenshots)
+        pool.drain();
+        Ok(screenshots)
+    }
 }
 
 unsafe fn cgimage_to_image(image: CGImage) -> Result<RgbaImage> {

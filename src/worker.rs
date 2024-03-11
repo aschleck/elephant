@@ -17,7 +17,14 @@ struct EmbeddingResponse {
     embedding: Vec<f64>,
 }
 
-pub fn record_state(state_mutex: Arc<Mutex<State>>) -> Result<()> {
+pub fn record_state_loop(state_mutex: Arc<Mutex<State>>) -> Result<()> {
+    while true {
+        record_state(&state_mutex);
+    }
+    Ok(())
+}
+
+fn record_state(state_mutex: &Arc<Mutex<State>>) -> Result<()> {
     let screenshots = take_screenshots()?;
     (*state_mutex).lock().unwrap().window_count = screenshots.len();
 
@@ -26,7 +33,8 @@ pub fn record_state(state_mutex: Arc<Mutex<State>>) -> Result<()> {
         let jpeg = screenshot.jpeg;
         let request = EmbeddingRequest {
             content: "<image>\nUSER:\n\
-                Provide a full description. Be as accurate and detailed as possible.\n\
+                Provide a full description of this screenshot. Be as accurate and detailed as \
+                possible.\n\
                 ASSISTANT:\n"
                 .into(),
             image: STANDARD.encode(jpeg),
