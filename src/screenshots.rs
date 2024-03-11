@@ -85,6 +85,13 @@ pub fn get_windows() -> Result<Vec<Window>> {
                 continue;
             }
             let title = CFString::from_void(raw_title).to_string();
+            // There's probably a better way to avoid raised search boxes and what not, alas I
+            // don't know it.
+            // Maybe some info here
+            // https://stackoverflow.com/q/5286274
+            if title == "" {
+                continue;
+            }
             windows.push(WindowHandle {
                 id: id,
                 title: title,
