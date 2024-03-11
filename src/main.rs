@@ -1,45 +1,29 @@
 #[macro_use]
-extern crate cocoa;
-#[macro_use]
 extern crate objc;
 
+use cocoa::{delegate};
+use cocoa::base::{id, nil, NO};
+use cocoa::foundation::{NSAutoreleasePool, NSData, NSPoint, NSRect, NSSize, NSString};
+use core_graphics::access::ScreenCaptureAccess;
+use objc::runtime::{Object, Sel};
+use std::os::raw::c_void;
+use std::sync::{Arc, Mutex};
+use std::thread;
 use cocoa::appkit::{
     NSApp, NSApplication, NSApplicationActivateIgnoringOtherApps,
     NSApplicationActivationPolicyAccessory, NSBackingStoreBuffered, NSImage, NSMenu, NSMenuItem,
     NSRunningApplication, NSSquareStatusItemLength, NSStatusBar, NSStatusItem, NSWindow,
     NSWindowStyleMask,
 };
-use cocoa::base::{id, nil, NO};
-use cocoa::foundation::{NSAutoreleasePool, NSData, NSPoint, NSRect, NSSize, NSString};
-use core_foundation::array::{CFArrayGetCount, CFArrayGetValueAtIndex};
-use core_foundation::base::ToVoid;
-use core_foundation::boolean::CFBooleanRef;
-use core_foundation::dictionary::{CFDictionaryGetValue, CFDictionaryRef};
-use core_foundation::number::{kCFNumberIntType, CFBooleanGetValue, CFNumberGetValue, CFNumberRef};
-use core_graphics::access::ScreenCaptureAccess;
-use core_graphics::display::{
-    kCGNullWindowID, kCGWindowImageDefault, kCGWindowListExcludeDesktopElements,
-    kCGWindowListOptionIncludingWindow, kCGWindowListOptionOnScreenOnly, CGRectNull,
-};
-
-use core_graphics::window::{
-    kCGWindowIsOnscreen, kCGWindowNumber, kCGWindowSharingNone, kCGWindowSharingState,
-    CGWindowListCopyWindowInfo, CGWindowListCreateImage,
-};
-
-use objc::runtime::{Object, Sel};
-use std::os::raw::c_void;
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::thread;
 
 mod objc_ffi;
-use crate::objc_ffi::{NSBitmapImageFileType, NSBitmapImageRep, NSTextView};
+mod screenshots;
+mod types;
+mod worker;
 
-struct State {
-    window_count: usize,
-    window_open: bool,
-}
+use crate::objc_ffi::NSTextView;
+use crate::types::State;
+use crate::worker::record_state;
 
 extern "C" fn should_close(_: &Object, _: Sel, _: id) -> bool {
     return false;
@@ -103,71 +87,6 @@ fn add_to_status_bar() {
     }
 }
 
-fn take_screenshots(state: Arc<Mutex<State>>) {
-    let windows = unsafe {
-        let window_infos = CGWindowListCopyWindowInfo(
-            kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
-            kCGNullWindowID,
-        );
-        let mut windows: Vec<u32> = Vec::new();
-        for i in 0..CFArrayGetCount(window_infos) {
-            let info = CFArrayGetValueAtIndex(window_infos, i) as CFDictionaryRef;
-            if info.is_null() {
-                continue;
-            }
-
-            let raw_sharing_state = CFDictionaryGetValue(info, kCGWindowSharingState.to_void());
-            let mut sharing_state: u32 = 0;
-            CFNumberGetValue(
-                raw_sharing_state as CFNumberRef,
-                kCFNumberIntType,
-                &mut sharing_state as *mut _ as *mut c_void,
-            );
-            if sharing_state == kCGWindowSharingNone {
-                continue;
-            }
-
-            let raw_onscreen = CFDictionaryGetValue(info, kCGWindowIsOnscreen.to_void());
-            if !CFBooleanGetValue(raw_onscreen as CFBooleanRef) {
-                continue;
-            }
-
-            let raw_id = CFDictionaryGetValue(info, kCGWindowNumber.to_void());
-            let mut id: u32 = 0;
-            CFNumberGetValue(
-                raw_id as CFNumberRef,
-                kCFNumberIntType,
-                &mut id as *mut _ as *mut c_void,
-            );
-            windows.push(id);
-        }
-        windows
-    };
-
-    (*state).lock().unwrap().window_count = windows.len();
-
-    for window in windows {
-        let jpeg = unsafe {
-            let image = CGWindowListCreateImage(
-                CGRectNull,
-                kCGWindowListOptionIncludingWindow,
-                window,
-                kCGWindowImageDefault,
-            );
-            NSBitmapImageRep::alloc(nil)
-                .initWithCGImage_(image)
-                .representationUsingType_(NSBitmapImageFileType::NSBitmapImageFileTypeJPEG)
-        };
-        unsafe {
-            NSData::writeToFile_atomically_(
-                jpeg,
-                NSString::alloc(nil).init_str("/Users/april/test.jpg"),
-                NO,
-            );
-        }
-    }
-}
-
 fn open_window(state: &mut State, window_delegate: id) {
     unsafe {
         let window = NSWindow::alloc(nil).initWithContentRect_styleMask_backing_defer_(
@@ -213,7 +132,7 @@ fn main() {
         }));
         let cloned = Arc::clone(&state);
         thread::spawn(|| {
-            take_screenshots(cloned);
+            record_state(cloned).unwrap();
         });
 
         let window_delegate = delegate!("WindowDelegate", {
