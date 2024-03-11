@@ -7,12 +7,17 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.80"
+arrow-array = "50.0.0"
+arrow-schema = "50.0.0"
 base64 = "0.22.0"
 cocoa = "0.25.0"
 core-foundation = "0.9.4"
 core-graphics = "0.23.1"
 foreign-types-shared = "0.3.1"
-image = "0.25"
+futures = "0.3.30"
+lancedb = "0.4.12"
+metrohash = "1.0.6"
 objc = "0.2.7"
-reqwest = { version = "0.11.25", features = ["blocking", "json"] }
+reqwest = { version = "0.11.25", features = ["json"] }
 serde = { version = "1.0.197", features = ["derive"] }
+tokio = "1.36.0"

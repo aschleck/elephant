@@ -9,7 +9,8 @@ use core_foundation::number::{kCFNumberIntType, CFBooleanGetValue, CFNumberGetVa
 use core_foundation::string::CFString;
 use core_graphics::image::CGImage;
 use foreign_types_shared::ForeignType;
-use image::RgbaImage;
+use metrohash::MetroHash64;
+use std::hash::{Hash, Hasher};
 use std::os::raw::c_void;
 
 use core_graphics::display::{
@@ -17,25 +18,19 @@ use core_graphics::display::{
     kCGWindowListOptionIncludingWindow, kCGWindowListOptionOnScreenOnly, CGRectNull,
 };
 use core_graphics::window::{
-    create_image, kCGWindowIsOnscreen, kCGWindowName, kCGWindowNumber, kCGWindowSharingNone,
-    kCGWindowSharingState, CGWindowListCopyWindowInfo,
+    create_image, kCGWindowIsOnscreen, kCGWindowLayer, kCGWindowName, kCGWindowNumber,
+    kCGWindowSharingNone, kCGWindowSharingState, CGWindowListCopyWindowInfo,
 };
 
-use crate::objc_ffi::{NSBitmapImageRep, NSBitmapImageFileType};
-
-pub struct Screenshot {
-    pub id: u32,
-    pub title: String,
-    pub image: RgbaImage,
-    pub jpeg: Vec<u8>,
-}
+use crate::objc_ffi::{NSBitmapImageFileType, NSBitmapImageRep};
+use crate::types::Window;
 
 struct WindowHandle {
     id: u32,
     title: String,
 }
 
-pub fn take_screenshots() -> Result<Vec<Screenshot>> {
+pub fn get_windows() -> Result<Vec<Window>> {
     unsafe {
         let pool = NSAutoreleasePool::new(nil);
 
@@ -43,7 +38,7 @@ pub fn take_screenshots() -> Result<Vec<Screenshot>> {
             kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
             kCGNullWindowID,
         );
-        let mut windows: Vec<WindowHandle> = Vec::new();
+        let mut windows = Vec::new();
         for i in 0..CFArrayGetCount(window_infos) {
             let info = CFArrayGetValueAtIndex(window_infos, i) as CFDictionaryRef;
             if info.is_null() {
@@ -66,6 +61,17 @@ pub fn take_screenshots() -> Result<Vec<Screenshot>> {
                 continue;
             }
 
+            let raw_layer = CFDictionaryGetValue(info, kCGWindowLayer.to_void());
+            let mut layer: u32 = 0;
+            CFNumberGetValue(
+                raw_layer as CFNumberRef,
+                kCFNumberIntType,
+                &mut layer as *mut _ as *mut c_void,
+            );
+            if layer != 0 {
+                continue;
+            }
+
             let raw_id = CFDictionaryGetValue(info, kCGWindowNumber.to_void());
             let mut id: u32 = 0;
             CFNumberGetValue(
@@ -75,6 +81,9 @@ pub fn take_screenshots() -> Result<Vec<Screenshot>> {
             );
 
             let raw_title = CFDictionaryGetValue(info, kCGWindowName.to_void());
+            if raw_title == std::ptr::null() {
+                continue;
+            }
             let title = CFString::from_void(raw_title).to_string();
             windows.push(WindowHandle {
                 id: id,
@@ -84,40 +93,33 @@ pub fn take_screenshots() -> Result<Vec<Screenshot>> {
         CFRelease(window_infos as *const c_void);
 
         let mut screenshots = Vec::new();
-        for window in windows {
+        for i in 0..windows.len() {
+            let window = &windows[i];
+            let z = windows.len() - 1 - i;
             let image = create_image(
                 CGRectNull,
                 kCGWindowListOptionIncludingWindow,
                 window.id,
                 kCGWindowImageDefault,
-            ).ok_or_else(|| anyhow!("Unable to take screenshot"))?;
-            screenshots.push(Screenshot {
+            )
+            .ok_or_else(|| anyhow!("Unable to take screenshot"))?;
+            let jpeg = cgimage_to_jpeg(image.clone())?;
+            let mut hasher = MetroHash64::new();
+            jpeg.hash(&mut hasher);
+            let hash = hasher.finish();
+            screenshots.push(Window {
                 id: window.id,
-                title: window.title,
-                image: cgimage_to_image(image.clone())?,
-                jpeg: cgimage_to_jpeg(image.clone())?,
+                title: window.title.clone(),
+                jpeg: jpeg,
+                jpeg_metrohash: hash,
+                //rgba_pixels: cgimage_to_pixels(image.clone())?,
+                z: z,
             });
-        };
+        }
 
         pool.drain();
         Ok(screenshots)
     }
-}
-
-unsafe fn cgimage_to_image(image: CGImage) -> Result<RgbaImage> {
-    let bytes = image.data();
-    let raw = bytes.bytes();
-    let width = image.width();
-    let height = image.height();
-    let mut copy = Vec::with_capacity(width * height * 4);
-    for row in raw.chunks_exact(image.bytes_per_row()) {
-        copy.extend_from_slice(&row[..width * 4]);
-    }
-    for bgra in copy.chunks_exact_mut(4) {
-        bgra.swap(0, 2);
-    }
-    let image = RgbaImage::from_raw(width.try_into()?, height.try_into()?, copy);
-    image.ok_or_else(|| anyhow!("Unable to convert image"))
 }
 
 unsafe fn cgimage_to_jpeg(image: CGImage) -> Result<Vec<u8>> {
@@ -128,3 +130,22 @@ unsafe fn cgimage_to_jpeg(image: CGImage) -> Result<Vec<u8>> {
     let slice = std::slice::from_raw_parts(raw.bytes() as *const u8, raw.length().try_into()?);
     Ok(Vec::from(slice))
 }
+
+//fn cgimage_to_pixels(cg: CGImage) -> Result<Vec<u8>> {
+//    if cg.bits_per_pixel() != 32 {
+//        return Err(anyhow!("Expected screenshot to be rgba32"));
+//    }
+//
+//    let data = cg.data();
+//    let raw = data.bytes();
+//    let width = cg.width();
+//    let height = cg.height();
+//    let mut copy = Vec::with_capacity(width * height * 4);
+//    for row in raw.chunks_exact(cg.bytes_per_row()) {
+//        copy.extend_from_slice(&row[..width * 4]);
+//    }
+//    for bgra in copy.chunks_exact_mut(4) {
+//        bgra.swap(0, 2);
+//    }
+//    Ok(copy)
+//}

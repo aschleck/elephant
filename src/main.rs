@@ -1,20 +1,22 @@
 #[macro_use]
 extern crate objc;
 
-use cocoa::{delegate};
-use cocoa::base::{id, nil, NO};
-use cocoa::foundation::{NSAutoreleasePool, NSData, NSPoint, NSRect, NSSize, NSString};
-use core_graphics::access::ScreenCaptureAccess;
-use objc::runtime::{Object, Sel};
-use std::os::raw::c_void;
-use std::sync::{Arc, Mutex};
-use std::thread;
 use cocoa::appkit::{
     NSApp, NSApplication, NSApplicationActivateIgnoringOtherApps,
     NSApplicationActivationPolicyAccessory, NSBackingStoreBuffered, NSImage, NSMenu, NSMenuItem,
     NSRunningApplication, NSSquareStatusItemLength, NSStatusBar, NSStatusItem, NSWindow,
     NSWindowStyleMask,
 };
+use cocoa::base::{id, nil, NO};
+use cocoa::delegate;
+use cocoa::foundation::{NSAutoreleasePool, NSData, NSPoint, NSRect, NSSize, NSString};
+use core_graphics::access::ScreenCaptureAccess;
+
+use objc::runtime::{Object, Sel};
+use std::collections::HashMap;
+use std::os::raw::c_void;
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 mod objc_ffi;
 mod screenshots;
@@ -103,7 +105,7 @@ fn open_window(state: &mut State, window_delegate: id) {
         window.setTitle_(title);
         window.setDelegate_(window_delegate);
 
-        let count = state.window_count.to_string();
+        let count = state.windows.len().to_string();
         let content = NSTextView::alloc(nil).initWithFrame_(window.contentView().frame());
         content.setEditable_(NO);
         content.setString_(NSString::alloc(nil).init_str(&count).autorelease());
@@ -127,7 +129,7 @@ fn main() {
         }
 
         let state = Arc::new(Mutex::new(State {
-            window_count: 0,
+            windows: HashMap::new(),
             window_open: false,
         }));
         let cloned = Arc::clone(&state);
