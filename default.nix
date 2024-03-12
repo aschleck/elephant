@@ -14,7 +14,6 @@ pkgs.mkShell {
 
   shellHook = ''
     alias vim=nvim
-    export PS1="\[\033[1;32m\][esc:\w]\$\[\033[0m\] "
 
     # lancedb has some nonsense expecting this to be set
     export RUSTUP_TOOLCHAIN=stable
