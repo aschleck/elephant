@@ -63,7 +63,11 @@ pub async fn record_state_loop(state_mutex: Arc<Mutex<State>>) -> Result<()> {
     let response = client
         .post("http://127.0.0.1:8080/embedding")
         .json(&TextOnlyEmbeddingRequest {
-            content: "USER:\nFind all screenshots showing:\ncoffee\nASSISTANT:\n".into(),
+            content: "USER:\n\
+                Provide a full description of the following. Be as accurate and detailed as \
+                possible.\n\
+                coffee\nASSISTANT:\n"
+                .into(),
         })
         .send()
         .await?
@@ -98,14 +102,16 @@ async fn record_state(
     let client = reqwest::Client::new();
     let mut embeddings = Vec::new();
     for window in &changed {
-        let jpeg = &window.jpeg;
         let request = EmbeddingRequest {
             content: "[img-0]\nUSER:\n\
                 Provide a full description of this screenshot. Be as accurate and detailed as \
                 possible.\n\
                 ASSISTANT:\n"
                 .into(),
-            image_data: vec![Image { id: 0, data: STANDARD.encode(jpeg) }],
+            image_data: vec![Image {
+                id: 0,
+                data: STANDARD.encode(&window.jpeg),
+            }],
         };
         let response = client
             .post("http://127.0.0.1:8080/embedding")
@@ -116,6 +122,8 @@ async fn record_state(
             .await?;
         embeddings.push(response.embedding);
         println!("{}", window.title);
+        // TODO
+        break;
     }
 
     let new_batches = RecordBatchIterator::new(
@@ -123,6 +131,7 @@ async fn record_state(
             schema.clone(),
             vec![
                 Arc::new(UInt64Array::from_iter_values(
+                    // TODO
                     changed[..1].iter().map(|w| w.jpeg_metrohash),
                 )),
                 Arc::new(

@@ -10,6 +10,6 @@ pub struct Window {
     pub title: String,
     pub jpeg: Vec<u8>,
     pub jpeg_metrohash: u64,
-    //pub rgba_pixels: Vec<u8>,
+    //pub jpeg_small: Vec<u8>,
     pub z: usize,
 }

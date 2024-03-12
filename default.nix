@@ -9,6 +9,7 @@ pkgs.mkShell {
     rustfmt
   ] ++ (with darwin.apple_sdk; [
     frameworks.AppKit
+    frameworks.Vision
   ]);
 
   shellHook = ''
