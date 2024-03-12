@@ -3,9 +3,12 @@ use arrow_array::types::Float32Type;
 use arrow_array::{FixedSizeListArray, RecordBatch, RecordBatchIterator, UInt64Array};
 use arrow_schema::{DataType, Field, Schema};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use futures::future;
 use futures::TryStreamExt;
+use reqwest::header::AUTHORIZATION;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -15,24 +18,33 @@ use crate::types::{State, Window};
 
 #[derive(Debug, Deserialize, Serialize)]
 struct EmbeddingRequest {
-    content: String,
-    image_data: Vec<Image>,
+    instances: Vec<EmbeddingRequestInstance>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-struct Image {
-    id: u32,
-    data: String,
+struct EmbeddingRequestInstance {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image: Option<EmbeddingRequestInstanceImage>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-struct TextOnlyEmbeddingRequest {
-    content: String,
+struct EmbeddingRequestInstanceImage {
+    bytesBase64Encoded: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 struct EmbeddingResponse {
-    embedding: Vec<f32>,
+    predictions: Vec<EmbeddingResponsePrediction>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct EmbeddingResponsePrediction {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    imageEmbedding: Option<Vec<f32>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    textEmbedding: Option<Vec<f32>>,
 }
 
 const LOOP_DURATION: Duration = Duration::from_secs(10);
@@ -47,7 +59,7 @@ pub async fn record_state_loop(state_mutex: Arc<Mutex<State>>) -> Result<()> {
         Field::new("metrohash", DataType::UInt64, false),
         Field::new(
             "embedding",
-            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 4096),
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 1408),
             true,
         ),
     ]));
@@ -59,24 +71,35 @@ pub async fn record_state_loop(state_mutex: Arc<Mutex<State>>) -> Result<()> {
         .execute()
         .await?;
 
+    let google_key = String::from_utf8(
+        Command::new("gcloud")
+            .args(["auth", "print-access-token"])
+            .output()
+            .expect("Unable to get Google token")
+            .stdout,
+    )?;
     let client = reqwest::Client::new();
     let response = client
-        .post("http://127.0.0.1:8080/embedding")
-        .json(&TextOnlyEmbeddingRequest {
-            content: "USER:\n\
-                Provide a full description of the following. Be as accurate and detailed as \
-                possible.\n\
-                coffee\nASSISTANT:\n"
-                .into(),
+        .post(
+            "https://us-west1-aiplatform.googleapis.com/v1/projects/1012868746574/\
+                locations/us-west1/publishers/google/models/\
+                multimodalembedding@001:predict",
+        )
+        .header(AUTHORIZATION, format!("Bearer {}", google_key.trim()))
+        .json(&EmbeddingRequest {
+            instances: vec![EmbeddingRequestInstance {
+                text: Some("A screenshot about mass production of coffee".into()),
+                image: None,
+            }],
         })
         .send()
         .await?
         .json::<EmbeddingResponse>()
         .await?;
     let results = table
-        .search(&response.embedding)
+        .search(response.predictions[0].textEmbedding.as_ref().unwrap())
         .select(&["metrohash"])
-        .limit(4)
+        .limit(10)
         .execute_stream()
         .await?
         .try_collect::<Vec<_>>()
@@ -99,31 +122,50 @@ async fn record_state(
 ) -> Result<()> {
     let (changed, unchanged) = get_and_compare_windows(&state_mutex)?;
 
+    let google_key = String::from_utf8(
+        Command::new("gcloud")
+            .args(["auth", "print-access-token"])
+            .output()
+            .expect("Unable to get Google token")
+            .stdout,
+    )?;
+
     let client = reqwest::Client::new();
-    let mut embeddings = Vec::new();
+    let mut responses = Vec::new();
     for window in &changed {
         let request = EmbeddingRequest {
-            content: "[img-0]\nUSER:\n\
-                Provide a full description of this screenshot. Be as accurate and detailed as \
-                possible.\n\
-                ASSISTANT:\n"
-                .into(),
-            image_data: vec![Image {
-                id: 0,
-                data: STANDARD.encode(&window.jpeg),
+            instances: vec![EmbeddingRequestInstance {
+                text: Some(
+                    "Provide a full description of this screenshot. Be as accurate and detailed \
+                    as possible."
+                        .into(),
+                ),
+                image: Some(EmbeddingRequestInstanceImage {
+                    bytesBase64Encoded: STANDARD.encode(&window.jpeg),
+                }),
             }],
         };
-        let response = client
-            .post("http://127.0.0.1:8080/embedding")
-            .json(&request)
-            .send()
-            .await?
-            .json::<EmbeddingResponse>()
-            .await?;
-        embeddings.push(response.embedding);
-        println!("{}", window.title);
-        // TODO
-        break;
+        responses.push(
+            client
+                .post(
+                    "https://us-west1-aiplatform.googleapis.com/v1/projects/1012868746574/\
+                    locations/us-west1/publishers/google/models/\
+                    multimodalembedding@001:predict",
+                )
+                .header(AUTHORIZATION, format!("Bearer {}", google_key.trim()))
+                .json(&request)
+                .send(),
+        );
+    }
+
+    let mut embeddings = Vec::new();
+    for response in future::join_all(responses).await {
+        embeddings.push(
+            response?.json::<EmbeddingResponse>().await?.predictions[0]
+                .imageEmbedding
+                .clone()
+                .unwrap(),
+        );
     }
 
     let new_batches = RecordBatchIterator::new(
@@ -132,14 +174,14 @@ async fn record_state(
             vec![
                 Arc::new(UInt64Array::from_iter_values(
                     // TODO
-                    changed[..1].iter().map(|w| w.jpeg_metrohash),
+                    changed.iter().map(|w| w.jpeg_metrohash),
                 )),
                 Arc::new(
                     FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-                        embeddings[..1]
+                        embeddings
                             .iter()
                             .map(|e| Some(e.iter().map(|i| Some(i.clone())))),
-                        4096,
+                        1408,
                     ),
                 ),
             ],

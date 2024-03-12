@@ -3,6 +3,7 @@
 pkgs.mkShell {
   buildInputs = with pkgs; [
     cargo
+    google-cloud-sdk
     libiconv
     protobuf
     rustc
